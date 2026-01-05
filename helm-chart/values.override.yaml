@@ -1,6 +1,6 @@
 # CVAT Helm Chart Override Values
 # This file contains custom values that override the default values.yaml
-# 
+#
 # Usage:
 #   helm upgrade -n <namespace> <release_name> -i --create-namespace ./helm-chart \
 #     -f ./helm-chart/values.yaml -f ./helm-chart/values.override.yaml
@@ -10,15 +10,15 @@
 postgresql:
   secret:
     # Change these passwords to secure values
-    password: <CHANGE_ME_POSTGRESQL_PASSWORD>
-    postgres_password: <CHANGE_ME_POSTGRES_POSTGRES_PASSWORD>
-    replication_password: <CHANGE_ME_REPLICATION_PASSWORD>
+    password: test
+    postgres_password: test
+    replication_password: test
 
 # Redis Configuration
 # Optional: Change Redis password if needed
 redis:
   secret:
-    password: <CHANGE_ME_REDIS_PASSWORD>
+    password: test
 
 # CVAT Backend Configuration
 cvat:
@@ -56,54 +56,57 @@ cvat:
     # Storage configuration
     defaultStorage:
       enabled: true
-      size: 20Gi  # Adjust based on your needs
+      size: 30Gi  # Adjust based on your needs
       # storageClassName: default  # Uncomment and set if needed
 
     # External MinIO/S3 Configuration
     # Add environment variables for MinIO/S3 access if needed
     # Note: CVAT configures cloud storage through its API, but you can set
     # default AWS credentials here if your MinIO requires them
-    additionalEnv:
-      # Option A: Direct values (not recommended for production)
-      # Uncomment and configure if you need default AWS/MinIO credentials:
-      # - name: AWS_ACCESS_KEY_ID
-      #   value: "YOUR_MINIO_ACCESS_KEY"
-      # - name: AWS_SECRET_ACCESS_KEY
-      #   value: "YOUR_MINIO_SECRET_KEY"
-      # - name: AWS_DEFAULT_REGION
-      #   value: "us-east-1"  # MinIO doesn't require real region, but boto3 needs it
-      # - name: AWS_ENDPOINT_URL
-      #   value: "http://minio.example.com:9000"  # Your MinIO endpoint URL
-      #
-      # Option B: From Kubernetes Secret (recommended)
-      # First, create a secret:
-      #   kubectl create secret generic cvat-minio-credentials \
-      #     --from-literal=AWS_ACCESS_KEY_ID=your-access-key \
-      #     --from-literal=AWS_SECRET_ACCESS_KEY=your-secret-key \
-      #     --from-literal=AWS_DEFAULT_REGION=us-east-1 \
-      #     --from-literal=AWS_ENDPOINT_URL=http://minio.example.com:9000 \
-      #     -n <your-namespace>
-      # Then uncomment:
-      # - name: AWS_ACCESS_KEY_ID
-      #   valueFrom:
-      #     secretKeyRef:
-      #       name: cvat-minio-credentials
-      #       key: AWS_ACCESS_KEY_ID
-      # - name: AWS_SECRET_ACCESS_KEY
-      #   valueFrom:
-      #     secretKeyRef:
-      #       name: cvat-minio-credentials
-      #       key: AWS_SECRET_ACCESS_KEY
-      # - name: AWS_DEFAULT_REGION
-      #   valueFrom:
-      #     secretKeyRef:
-      #       name: cvat-minio-credentials
-      #       key: AWS_DEFAULT_REGION
-      # - name: AWS_ENDPOINT_URL
-      #   valueFrom:
-      #     secretKeyRef:
-      #       name: cvat-minio-credentials
-      #       key: AWS_ENDPOINT_URL
+    #
+    # Option A: Direct values (not recommended for production)
+    # Uncomment and configure if you need default AWS/MinIO credentials:
+    # additionalEnv:
+    #   - name: AWS_ACCESS_KEY_ID
+    #     value: "YOUR_MINIO_ACCESS_KEY"
+    #   - name: AWS_SECRET_ACCESS_KEY
+    #     value: "YOUR_MINIO_SECRET_KEY"
+    #   - name: AWS_DEFAULT_REGION
+    #     value: "us-east-1"  # MinIO doesn't require real region, but boto3 needs it
+    #   - name: AWS_ENDPOINT_URL
+    #     value: "http://minio.example.com:9000"  # Your MinIO endpoint URL
+    #
+    # Option B: From Kubernetes Secret (recommended)
+    # First, create a secret:
+    #   kubectl create secret generic cvat-minio-credentials \
+    #     --from-literal=AWS_ACCESS_KEY_ID=your-access-key \
+    #     --from-literal=AWS_SECRET_ACCESS_KEY=your-secret-key \
+    #     --from-literal=AWS_DEFAULT_REGION=us-east-1 \
+    #     --from-literal=AWS_ENDPOINT_URL=http://minio.example.com:9000 \
+    #     -n <your-namespace>
+    # Then uncomment:
+    # additionalEnv:
+    #   - name: AWS_ACCESS_KEY_ID
+    #     valueFrom:
+    #       secretKeyRef:
+    #         name: cvat-minio-credentials
+    #         key: AWS_ACCESS_KEY_ID
+    #   - name: AWS_SECRET_ACCESS_KEY
+    #     valueFrom:
+    #       secretKeyRef:
+    #         name: cvat-minio-credentials
+    #         key: AWS_SECRET_ACCESS_KEY
+    #   - name: AWS_DEFAULT_REGION
+    #     valueFrom:
+    #       secretKeyRef:
+    #         name: cvat-minio-credentials
+    #         key: AWS_DEFAULT_REGION
+    #   - name: AWS_ENDPOINT_URL
+    #     valueFrom:
+    #       secretKeyRef:
+    #         name: cvat-minio-credentials
+    #         key: AWS_ENDPOINT_URL
+    additionalEnv: []
 
   # Frontend Configuration
   frontend:
@@ -116,10 +119,10 @@ cvat:
   kvrocks:
     enabled: true
     secret:
-      password: <CHANGE_ME_KVROCKS_PASSWORD>
+      password: test
     defaultStorage:
       enabled: true
-      size: 100Gi  # Adjust based on your needs
+      size: 20Gi  # Adjust based on your needs
 
 # Ingress Configuration
 # Enable ingress if you want external access
