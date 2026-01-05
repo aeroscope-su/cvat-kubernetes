@@ -1,0 +1,231 @@
+# CVAT Helm Chart Override Values
+# This file contains custom values that override the default values.yaml
+# 
+# Usage:
+#   helm upgrade -n <namespace> <release_name> -i --create-namespace ./helm-chart \
+#     -f ./helm-chart/values.yaml -f ./helm-chart/values.override.yaml
+
+# PostgreSQL Configuration
+# REQUIRED: Set secure passwords for PostgreSQL
+postgresql:
+  secret:
+    # Change these passwords to secure values
+    password: <CHANGE_ME_POSTGRESQL_PASSWORD>
+    postgres_password: <CHANGE_ME_POSTGRES_POSTGRES_PASSWORD>
+    replication_password: <CHANGE_ME_REPLICATION_PASSWORD>
+
+# Redis Configuration
+# Optional: Change Redis password if needed
+redis:
+  secret:
+    password: <CHANGE_ME_REDIS_PASSWORD>
+
+# CVAT Backend Configuration
+cvat:
+  backend:
+    # Image configuration
+    image: cvat/server
+    tag: dev  # Change to specific version tag for production
+    imagePullPolicy: Always
+
+    # Server replicas
+    server:
+      replicas: 1
+      envs:
+        ALLOWED_HOSTS: "*"  # Change to your domain name(s) for production
+
+    # Worker replicas - adjust based on your workload
+    worker:
+      export:
+        replicas: 2
+      import:
+        replicas: 2
+      annotation:
+        replicas: 1
+      webhooks:
+        replicas: 1
+      qualityreports:
+        replicas: 1
+      chunks:
+        replicas: 2
+      consensus:
+        replicas: 1
+      utils:
+        replicas: 1
+
+    # Storage configuration
+    defaultStorage:
+      enabled: true
+      size: 20Gi  # Adjust based on your needs
+      # storageClassName: default  # Uncomment and set if needed
+
+    # External MinIO/S3 Configuration
+    # Add environment variables for MinIO/S3 access if needed
+    # Note: CVAT configures cloud storage through its API, but you can set
+    # default AWS credentials here if your MinIO requires them
+    additionalEnv:
+      # Option A: Direct values (not recommended for production)
+      # Uncomment and configure if you need default AWS/MinIO credentials:
+      # - name: AWS_ACCESS_KEY_ID
+      #   value: "YOUR_MINIO_ACCESS_KEY"
+      # - name: AWS_SECRET_ACCESS_KEY
+      #   value: "YOUR_MINIO_SECRET_KEY"
+      # - name: AWS_DEFAULT_REGION
+      #   value: "us-east-1"  # MinIO doesn't require real region, but boto3 needs it
+      # - name: AWS_ENDPOINT_URL
+      #   value: "http://minio.example.com:9000"  # Your MinIO endpoint URL
+      #
+      # Option B: From Kubernetes Secret (recommended)
+      # First, create a secret:
+      #   kubectl create secret generic cvat-minio-credentials \
+      #     --from-literal=AWS_ACCESS_KEY_ID=your-access-key \
+      #     --from-literal=AWS_SECRET_ACCESS_KEY=your-secret-key \
+      #     --from-literal=AWS_DEFAULT_REGION=us-east-1 \
+      #     --from-literal=AWS_ENDPOINT_URL=http://minio.example.com:9000 \
+      #     -n <your-namespace>
+      # Then uncomment:
+      # - name: AWS_ACCESS_KEY_ID
+      #   valueFrom:
+      #     secretKeyRef:
+      #       name: cvat-minio-credentials
+      #       key: AWS_ACCESS_KEY_ID
+      # - name: AWS_SECRET_ACCESS_KEY
+      #   valueFrom:
+      #     secretKeyRef:
+      #       name: cvat-minio-credentials
+      #       key: AWS_SECRET_ACCESS_KEY
+      # - name: AWS_DEFAULT_REGION
+      #   valueFrom:
+      #     secretKeyRef:
+      #       name: cvat-minio-credentials
+      #       key: AWS_DEFAULT_REGION
+      # - name: AWS_ENDPOINT_URL
+      #   valueFrom:
+      #     secretKeyRef:
+      #       name: cvat-minio-credentials
+      #       key: AWS_ENDPOINT_URL
+
+  # Frontend Configuration
+  frontend:
+    image: cvat/ui
+    tag: dev  # Change to specific version tag for production
+    imagePullPolicy: Always
+    replicas: 1
+
+  # KVRocks Configuration
+  kvrocks:
+    enabled: true
+    secret:
+      password: <CHANGE_ME_KVROCKS_PASSWORD>
+    defaultStorage:
+      enabled: true
+      size: 100Gi  # Adjust based on your needs
+
+# Ingress Configuration
+# Enable ingress if you want external access
+ingress:
+  enabled: false  # Set to true to enable ingress
+  hostname: cvat.local  # Change to your domain name
+  className: ""  # Set your ingress class name (e.g., "nginx", "traefik")
+  annotations: {}
+  # Example annotations for nginx:
+  #   kubernetes.io/ingress.class: nginx
+  #   cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls: false  # Set to true if you want TLS
+  tlsSecretName: ingress-tls-cvat
+
+# Traefik Ingress Controller
+# Enable if you want to use Traefik as ingress controller
+traefik:
+  enabled: false  # Set to true if using Traefik
+  # For Minikube, you may need to set externalIPs:
+  # service:
+  #   externalIPs:
+  #     - "YOUR_MINIKUBE_IP"  # Get with: minikube ip
+
+# Nuclio Configuration (for Auto Annotation)
+# Set to true if you want to enable Nuclio for serverless functions
+nuclio:
+  enabled: false
+  # If enabled, configure registry credentials:
+  # registry:
+  #   loginUrl: your-registry-url
+  #   credentials:
+  #     username: your-username
+  #     password: your-password
+  # Or use existing secret:
+  # registry:
+  #   secretName: your-registry-credentials-secret-name
+
+# Analytics Configuration
+analytics:
+  enabled: true  # Set to false to disable analytics
+  clickhouseDb: cvat
+  clickhouseUser: user
+  clickhousePassword: user  # Change to secure password
+
+# External Database Configuration (Optional)
+# If you want to use external PostgreSQL instead of the one deployed by Helm:
+# postgresql:
+#   enabled: false
+#   external:
+#     host: postgresql.example.com
+#     port: 5432
+#   auth:
+#     username: cvat
+#     database: cvat
+#   secret:
+#     password: your_external_db_password
+
+# External Redis Configuration (Optional)
+# If you want to use external Redis instead of the one deployed by Helm:
+# redis:
+#   enabled: false
+#   external:
+#     host: redis.example.com
+#   secret:
+#     password: your_external_redis_password
+
+# External MinIO/S3 Storage Configuration
+# CVAT supports S3-compatible storage (including MinIO) through its Cloud Storage API.
+# You can configure cloud storage in two ways:
+#
+# Option 1: Configure through CVAT Web UI or API after deployment
+#   - Go to Settings > Cloud Storages in CVAT UI
+#   - Add a new cloud storage with:
+#     * Provider: AWS S3
+#     * Bucket name: your-bucket-name
+#     * Endpoint URL: http://your-minio-server:9000 (or https://)
+#     * Access key ID: your-minio-access-key
+#     * Secret access key: your-minio-secret-key
+#     * Region: us-east-1 (MinIO doesn't require real region)
+#
+# Option 2: Use environment variables for default credentials (see above in backend.additionalEnv)
+#   Note: This sets default credentials, but you still need to configure cloud storage
+#   through CVAT API/UI with specific bucket and endpoint URL.
+#
+# Example API call to create cloud storage:
+#   POST /api/cloudstorages
+#   {
+#     "provider_type": "AWS_S3_BUCKET",
+#     "resource": "your-bucket-name",
+#     "credentials_type": "KEY_SECRET_KEY_PAIR",
+#     "specific_attributes": "endpoint_url=http://your-minio-server:9000",
+#     "session_token": "",
+#     "account_name": "",
+#     "key": "your-minio-access-key",
+#     "secret_key": "your-minio-secret-key"
+#   }
+#
+# For local MinIO (outside Kubernetes):
+#   - Ensure MinIO is accessible from Kubernetes pods (network connectivity)
+#   - Use MinIO server IP/hostname or configure DNS
+#   - If MinIO is on the same machine, you may need to use host.docker.internal
+#     or configure a NodePort/Service to expose it
+#   - For Minikube, you might need to use minikube service or port-forward
+#
+# Network connectivity tips:
+#   - If MinIO is on another server: use server IP or hostname
+#   - If MinIO is local but outside K8s: use host.docker.internal (Docker Desktop)
+#     or configure a Service/Ingress to expose MinIO
+#   - Ensure firewall rules allow access from Kubernetes pods
