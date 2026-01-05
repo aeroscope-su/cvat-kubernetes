@@ -2,13 +2,12 @@
 set -euo pipefail
 
 # =========================
-# DEPLOY FRESH - Full deployment script
+# DEPLOY FRESH - Full deployment script with Traefik
 # =========================
 # This script performs a complete fresh deployment:
 # - Deletes and recreates Minikube cluster
-# - Deploys CVAT via Helm
-# - Sets up Edge Nginx
-# - Configures CSRF settings
+# - Deploys CVAT via Helm with Traefik ingress
+# - Traefik handles all proxying and CSRF headers automatically
 #
 # Use this script for:
 # - Initial deployment
@@ -26,7 +25,7 @@ export RELEASE_NAME="cvat"
 # Внешний IP/домен сервера (то, что ты вбиваешь в браузере)
 export PUBLIC_HOST="10.144.165.63"
 
-# Порт, по которому CVAT будет доступен снаружи
+# Порт, по которому CVAT будет доступен снаружи (должен совпадать с Traefik NodePort)
 export EXTERNAL_PORT="30080"
 
 # =========================
@@ -52,105 +51,32 @@ kubectl config use-context minikube
 kubectl wait --for=condition=Ready node/minikube --timeout=5m
 
 # =========================
-# 2) Deploy CVAT via Helm
+# 2) Deploy CVAT via Helm (with Traefik)
 # =========================
 kubectl get ns "${NAMESPACE}" >/dev/null 2>&1 || kubectl create ns "${NAMESPACE}"
 
-# Если у тебя зависимости чарта используются:
+# Update Helm dependencies
 helm dependency update ./helm-chart
 
+# Deploy CVAT with Traefik ingress
 helm upgrade --install "${RELEASE_NAME}" ./helm-chart \
   -n "${NAMESPACE}" \
   --create-namespace \
   -f ./helm-chart/values.yaml \
   -f ./helm-chart/values.override.yaml
 
+# Wait for Traefik to be ready
+echo "Waiting for Traefik to be ready..."
+kubectl -n "${NAMESPACE}" wait --for=condition=ready pod \
+  -l app.kubernetes.io/name=traefik \
+  --timeout=10m || true
+
 # Wait for core components
 kubectl -n "${NAMESPACE}" rollout status deploy/cvat-backend-server --timeout=20m
 kubectl -n "${NAMESPACE}" rollout status deploy/cvat-frontend --timeout=20m
 
 # =========================
-# 3) Edge Nginx inside cluster (UI + /api)
-# =========================
-kubectl -n "${NAMESPACE}" apply -f - <<'YAML'
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cvat-edge-nginx
-data:
-  default.conf: |
-    server {
-      listen 8080;
-      server_name _;
-      client_max_body_size 0;
-
-      location /api/ {
-        proxy_pass http://cvat-backend-service:8080/api/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Port $server_port;
-      }
-
-      location / {
-        proxy_pass http://cvat-frontend-service:8000/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Port $server_port;
-      }
-    }
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: cvat-edge
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: cvat-edge
-  template:
-    metadata:
-      labels:
-        app: cvat-edge
-    spec:
-      containers:
-        - name: nginx
-          image: nginx:1.27-alpine
-          ports:
-            - containerPort: 8080
-          volumeMounts:
-            - name: cfg
-              mountPath: /etc/nginx/conf.d
-      volumes:
-        - name: cfg
-          configMap:
-            name: cvat-edge-nginx
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: cvat-edge
-spec:
-  type: NodePort
-  selector:
-    app: cvat-edge
-  ports:
-    - name: http
-      port: 8080
-      targetPort: 8080
-      nodePort: 30080
-YAML
-
-kubectl -n "${NAMESPACE}" rollout status deploy/cvat-edge --timeout=5m
-
-# =========================
-# 4) Fix CSRF for external URL
+# 3) Configure CSRF for external URL
 # =========================
 export PUBLIC_URL="http://${PUBLIC_HOST}:${EXTERNAL_PORT}"
 
@@ -158,12 +84,10 @@ export PUBLIC_URL="http://${PUBLIC_HOST}:${EXTERNAL_PORT}"
 export PUBLIC_SCHEME="http"
 export PUBLIC_HOST_ONLY="${PUBLIC_HOST}"
 
-# Set environment variables for CVAT backend
-# CSRF_TRUSTED_ORIGINS should be a comma-separated list for Django
-# Note: Django 4.2+ supports CSRF_TRUSTED_ORIGINS via environment variable
-# Format: comma-separated list of origins (without trailing slash)
-# Also set CSRF_COOKIE_DOMAIN to empty to allow cookies from any domain
 echo "Setting CSRF_TRUSTED_ORIGINS=${PUBLIC_URL}"
+
+# Set environment variables for CVAT backend
+# Traefik will handle proper headers, but we still need to set trusted origins
 kubectl -n "${NAMESPACE}" set env deploy/cvat-backend-server \
   ALLOWED_HOSTS="*" \
   CSRF_TRUSTED_ORIGINS="${PUBLIC_URL}" \
@@ -180,7 +104,7 @@ kubectl -n "${NAMESPACE}" rollout restart deploy/cvat-backend-server
 kubectl -n "${NAMESPACE}" rollout status deploy/cvat-backend-server --timeout=10m
 
 # Also update all worker deployments with the same CSRF settings
-# (workers may need CSRF settings for some operations)
+echo "Updating CSRF settings for worker deployments..."
 for deployment in cvat-backend-worker-export cvat-backend-worker-import cvat-backend-worker-annotation \
                    cvat-backend-worker-webhooks cvat-backend-worker-qualityreports cvat-backend-worker-chunks \
                    cvat-backend-worker-consensus cvat-backend-worker-utils; do
@@ -193,11 +117,32 @@ for deployment in cvat-backend-worker-export cvat-backend-worker-import cvat-bac
 done
 
 # =========================
-# 5) Verify API returns JSON through edge
+# 4) Verify deployment
 # =========================
-echo "Testing: ${PUBLIC_URL}/api/server/about"
-curl -sS -i "${PUBLIC_URL}/api/server/about" | head -n 20
+export PUBLIC_URL="http://${PUBLIC_HOST}:${EXTERNAL_PORT}"
 
 echo
-echo "Open in browser:"
-echo "  ${PUBLIC_URL}/"
+echo "Checking Traefik service..."
+kubectl -n "${NAMESPACE}" get svc -l app.kubernetes.io/name=traefik
+
+echo
+echo "Checking Ingress..."
+kubectl -n "${NAMESPACE}" get ingress
+
+echo
+echo "Testing: ${PUBLIC_URL}/api/server/about"
+if curl -sS -f "${PUBLIC_URL}/api/server/about" >/dev/null 2>&1; then
+    echo "✓ API is accessible through Traefik"
+    curl -sS -i "${PUBLIC_URL}/api/server/about" | head -n 20
+else
+    echo "⚠ Warning: API test failed. Check if Traefik and services are running."
+    echo "  Check Traefik pods: kubectl get pods -n ${NAMESPACE} -l app.kubernetes.io/name=traefik"
+    echo "  Check Traefik service: kubectl get svc -n ${NAMESPACE} -l app.kubernetes.io/name=traefik"
+    echo "  Check Ingress: kubectl get ingress -n ${NAMESPACE}"
+fi
+
+echo
+echo "Deployment complete!"
+echo "Open in browser: ${PUBLIC_URL}/"
+echo
+echo "Note: Traefik is handling all proxying and CSRF headers automatically."

@@ -134,10 +134,8 @@ ingress:
   enabled: true  # Set to true to enable ingress
   hostname: cvat.local  # Change to your domain name
   className: "traefik"  # Set your ingress class name (e.g., "nginx", "traefik")
-  annotations: {}
-  # Example annotations for nginx:
-  #   kubernetes.io/ingress.class: nginx
-  #   cert-manager.io/cluster-issuer: letsencrypt-prod
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
   tls: false  # Set to true if you want TLS
   tlsSecretName: ingress-tls-cvat
 
@@ -145,11 +143,14 @@ ingress:
 # Enable if you want to use Traefik as ingress controller
 traefik:
   enabled: true  # Set to true if using Traefik
-  # For Minikube, you may need to set externalIPs:
+  # Traefik will be exposed via NodePort for external access
   service:
-    externalIPs:
-  #     - "YOUR_MINIKUBE_IP"  # Get with: minikube ip
-      - "192.168.49.2"
+    type: NodePort
+    nodePorts:
+      web: 30080  # External port for HTTP
+    # For Minikube, you may need to set externalIPs:
+    # externalIPs:
+    #   - "192.168.49.2"  # Get with: minikube ip
 
 # Nuclio Configuration (for Auto Annotation)
 # Set to true if you want to enable Nuclio for serverless functions
