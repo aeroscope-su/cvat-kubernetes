@@ -33,6 +33,9 @@ cvat:
       replicas: 1
       envs:
         ALLOWED_HOSTS: "*"  # Change to your domain name(s) for production
+        CSRF_TRUSTED_ORIGINS: "http://10-144-165-63.sslip.io:30080"
+        CSRF_COOKIE_SECURE: "false"
+        CORS_ALLOW_CREDENTIALS: "true"
         # CSRF settings - will be set by deploy.sh script
         # CSRF_TRUSTED_ORIGINS: "http://your-domain:port"  # Uncomment and set your URL
         # CSRF_COOKIE_DOMAIN: ""  # Empty for development, set domain for production
@@ -128,29 +131,27 @@ cvat:
       enabled: true
       size: 20Gi  # Adjust based on your needs
 
-# Ingress Configuration
-# Enable ingress if you want external access
+# Ingress Configuration (NGINX)
 ingress:
-  enabled: true  # Set to true to enable ingress
-  hostname: cvat.local  # Change to your domain name
-  className: "traefik"  # Set your ingress class name (e.g., "nginx", "traefik")
+  enabled: true
+
+  # Вариант без /etc/hosts: sslip.io (работает как DNS на IP)
+  # Для 10.144.165.63 -> 10-144-165-63.sslip.io
+  hostname: 10-144-165-63.sslip.io
+
+  className: "nginx"
   annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: web
-  tls: false  # Set to true if you want TLS
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  tls: false
   tlsSecretName: ingress-tls-cvat
 
-# Traefik Ingress Controller
-# Enable if you want to use Traefik as ingress controller
+# Traefik выключаем полностью
 traefik:
-  enabled: true  # Set to true if using Traefik
-  # Traefik will be exposed via NodePort for external access
-  service:
-    type: NodePort
-    nodePorts:
-      web: 30080  # External port for HTTP
-    # For Minikube, you may need to set externalIPs:
-    # externalIPs:
-    #   - "192.168.49.2"  # Get with: minikube ip
+  enabled: false
+
 
 # Nuclio Configuration (for Auto Annotation)
 # Set to true if you want to enable Nuclio for serverless functions
