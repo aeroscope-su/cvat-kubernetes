@@ -33,6 +33,10 @@ cvat:
       replicas: 1
       envs:
         ALLOWED_HOSTS: "*"  # Change to your domain name(s) for production
+        # CSRF settings - will be set by deploy.sh script
+        # CSRF_TRUSTED_ORIGINS: "http://your-domain:port"  # Uncomment and set your URL
+        # CSRF_COOKIE_DOMAIN: ""  # Empty for development, set domain for production
+        # CSRF_COOKIE_SECURE: "false"  # Set to "true" for HTTPS
 
     # Worker replicas - adjust based on your workload
     worker:

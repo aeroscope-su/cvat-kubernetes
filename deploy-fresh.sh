@@ -1,4 +1,22 @@
+#!/bin/bash
+#!/bin/bash
 set -euo pipefail
+
+# =========================
+# DEPLOY FRESH - Full deployment script
+# =========================
+# This script performs a complete fresh deployment:
+# - Deletes and recreates Minikube cluster
+# - Deploys CVAT via Helm
+# - Sets up Edge Nginx
+# - Configures CSRF settings
+#
+# Use this script for:
+# - Initial deployment
+# - Complete reset/redeployment
+#
+# For updating configuration only, use: ./deploy-update.sh
+# =========================
 
 # =========================
 # CONFIG (EDIT THESE)
@@ -73,6 +91,8 @@ data:
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
       }
 
       location / {
@@ -81,6 +101,8 @@ data:
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
       }
     }
 ---
@@ -133,11 +155,39 @@ kubectl -n "${NAMESPACE}" rollout status deploy/cvat-edge --timeout=5m
 # =========================
 export PUBLIC_URL="http://${PUBLIC_HOST}:${EXTERNAL_PORT}"
 
+# Extract scheme, host and port from PUBLIC_URL
+export PUBLIC_SCHEME="http"
+export PUBLIC_HOST_ONLY="${PUBLIC_HOST}"
+
+# Set environment variables for CVAT backend
+# CSRF_TRUSTED_ORIGINS should be a comma-separated list for Django
+# Note: Django 4.2+ supports CSRF_TRUSTED_ORIGINS via environment variable
+# Format: comma-separated list of origins (without trailing slash)
+# Also set CSRF_COOKIE_DOMAIN to empty to allow cookies from any domain
 kubectl -n "${NAMESPACE}" set env deploy/cvat-backend-server \
   ALLOWED_HOSTS="*" \
-  CSRF_TRUSTED_ORIGINS="${PUBLIC_URL}"
+  CSRF_TRUSTED_ORIGINS="${PUBLIC_URL}" \
+  CSRF_COOKIE_DOMAIN="" \
+  CSRF_COOKIE_SECURE="false" \
+  CVAT_UI_SCHEME="${PUBLIC_SCHEME}" \
+  CVAT_UI_HOST="${PUBLIC_HOST_ONLY}" \
+  CVAT_UI_PORT="${EXTERNAL_PORT}" \
+  CORS_ALLOW_CREDENTIALS="true"
 
 kubectl -n "${NAMESPACE}" rollout status deploy/cvat-backend-server --timeout=10m
+
+# Also update all worker deployments with the same CSRF settings
+# (workers may need CSRF settings for some operations)
+for deployment in cvat-backend-worker-export cvat-backend-worker-import cvat-backend-worker-annotation \
+                   cvat-backend-worker-webhooks cvat-backend-worker-qualityreports cvat-backend-worker-chunks \
+                   cvat-backend-worker-consensus cvat-backend-worker-utils; do
+  if kubectl -n "${NAMESPACE}" get deploy "${deployment}" >/dev/null 2>&1; then
+    kubectl -n "${NAMESPACE}" set env deploy/"${deployment}" \
+      CSRF_TRUSTED_ORIGINS="${PUBLIC_URL}" \
+      CSRF_COOKIE_DOMAIN="" \
+      CSRF_COOKIE_SECURE="false" || true
+  fi
+done
 
 # =========================
 # 5) Verify API returns JSON through edge
