@@ -1,5 +1,4 @@
 #!/bin/bash
-#!/bin/bash
 set -euo pipefail
 
 # =========================
@@ -164,6 +163,7 @@ export PUBLIC_HOST_ONLY="${PUBLIC_HOST}"
 # Note: Django 4.2+ supports CSRF_TRUSTED_ORIGINS via environment variable
 # Format: comma-separated list of origins (without trailing slash)
 # Also set CSRF_COOKIE_DOMAIN to empty to allow cookies from any domain
+echo "Setting CSRF_TRUSTED_ORIGINS=${PUBLIC_URL}"
 kubectl -n "${NAMESPACE}" set env deploy/cvat-backend-server \
   ALLOWED_HOSTS="*" \
   CSRF_TRUSTED_ORIGINS="${PUBLIC_URL}" \
@@ -174,6 +174,9 @@ kubectl -n "${NAMESPACE}" set env deploy/cvat-backend-server \
   CVAT_UI_PORT="${EXTERNAL_PORT}" \
   CORS_ALLOW_CREDENTIALS="true"
 
+# Restart deployment to apply environment variables
+echo "Restarting backend server to apply CSRF settings..."
+kubectl -n "${NAMESPACE}" rollout restart deploy/cvat-backend-server
 kubectl -n "${NAMESPACE}" rollout status deploy/cvat-backend-server --timeout=10m
 
 # Also update all worker deployments with the same CSRF settings

@@ -422,6 +422,21 @@ USE_TZ = True
 
 CSRF_COOKIE_NAME = "csrftoken"
 
+# CSRF Trusted Origins - can be set via environment variable
+# Format: comma-separated list of origins (e.g., "http://example.com,https://example.com")
+CSRF_TRUSTED_ORIGINS_ENV = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
+if CSRF_TRUSTED_ORIGINS_ENV:
+    CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in CSRF_TRUSTED_ORIGINS_ENV.split(",") if origin.strip()]
+else:
+    CSRF_TRUSTED_ORIGINS = []
+
+# CSRF Cookie settings
+CSRF_COOKIE_DOMAIN = os.environ.get("CSRF_COOKIE_DOMAIN", None)
+if CSRF_COOKIE_DOMAIN == "":
+    CSRF_COOKIE_DOMAIN = None
+
+CSRF_COOKIE_SECURE = os.environ.get("CSRF_COOKIE_SECURE", "false").lower() == "true"
+
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/2.0/howto/static-files/
 
