@@ -73,7 +73,9 @@ cvat:
     #
     # Option A: Direct values (not recommended for production)
     # Uncomment and configure if you need default AWS/MinIO credentials:
-    # additionalEnv: []
+    additionalEnv:
+      - name: AWS_S3_ADDRESSING_STYLE
+      - value: "path"
     #   - name: AWS_ACCESS_KEY_ID
     #     value: "YOUR_MINIO_ACCESS_KEY"
     #   - name: AWS_SECRET_ACCESS_KEY

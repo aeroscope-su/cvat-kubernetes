@@ -1,846 +1,356 @@
 # Руководство по развертыванию CVAT в Kubernetes
 
-Это руководство содержит пошаговые инструкции по развертыванию CVAT в кластере Kubernetes с использованием Helm chart.
+Это руководство описывает **текущий** способ деплоя CVAT из этого репозитория: Helm chart + Ingress-NGINX (NodePort) + Ingress-ресурс CVAT, с настройками из `values.override.yaml` и (для “с нуля”) скриптом `deploy-fresh-nginx.sh`.
+
+Актуальность: 2026-01-06 (сверено по `deploy-fresh-nginx.sh` и `values.override.yaml`).
 
 ## Содержание
 
 1. [Предварительные требования](#предварительные-требования)
-2. [Подготовка окружения](#подготовка-окружения)
-3. [Настройка конфигурации](#настройка-конфигурации)
-4. [Развертывание](#развертывание)
+2. [Быстрый старт: “с нуля” на Minikube + Ingress-NGINX](#быстрый-старт-с-нуля-на-minikube--ingress-nginx)
+3. [Конфигурация Helm: что реально используется в values.override.yaml](#конфигурация-helm-что-реально-используется-в-valuesoverrideyaml)
+4. [Деплой в существующий кластер (не Minikube)](#деплой-в-существующий-кластер-не-minikube)
 5. [Пост-развертывание](#пост-развертывание)
-6. [Настройка внешнего MinIO](#настройка-внешнего-minio)
+6. [Настройка внешнего MinIO (S3-compatible)](#настройка-внешнего-minio-s3-compatible)
 7. [Обновление развертывания](#обновление-развертывания)
 8. [Решение проблем](#решение-проблем)
+9. [Полезные команды](#полезные-команды)
+
+---
 
 ## Предварительные требования
 
 ### Обязательные компоненты
 
-1. **Kubernetes кластер** версии 1.23 или выше
-   - Рабочий кластер с настроенным kubectl
-   - Проверьте версию: `kubectl version --client --short`
+- Kubernetes кластер (для Helm chart). Для Minikube-скрипта — локальный Minikube кластер.
+- `kubectl`
+- `helm`
 
-2. **kubectl** установлен и настроен
-   - Проверьте подключение: `kubectl cluster-info`
-   - Убедитесь, что контекст правильный: `kubectl config current-context`
-
-3. **Helm** версии 3.x
-   - Установите Helm: https://helm.sh/docs/intro/install/
-   - Проверьте версию: `helm version`
-
-4. **Доступ к namespace** в кластере
-   - Создайте namespace или убедитесь, что у вас есть права на его использование
-
-### Опциональные компоненты
-
-- **Minikube** (для локальной разработки/тестирования)
-- **Ingress Controller** (nginx, traefik и т.д.) для внешнего доступа
-- **Cert-Manager** для автоматического управления TLS сертификатами
-
-## Подготовка окружения
-
-### 1. Клонирование репозитория
-
-Если вы еще не клонировали репозиторий:
+Проверка:
 
 ```bash
-git clone <repository-url>
-cd cvat-kubernetes
+kubectl version --client --short
+helm version
+kubectl cluster-info
 ```
 
-### 2. Выбор namespace
+### Для “быстрого старта” (скрипт)
 
-Определите namespace, в котором будет развернут CVAT:
+Скрипт `deploy-fresh-nginx.sh` **ожидает**:
+
+- установленный `minikube`
+- доступ к Docker (используется `--driver=docker`)
+- свободные порты на хосте, которые вы задаёте как `EXTERNAL_HTTP_PORT` и `EXTERNAL_HTTPS_PORT` (по умолчанию 30080/30443)
+
+---
+
+## Быстрый старт: “с нуля” на Minikube + Ingress-NGINX
+
+Этот путь соответствует `deploy-fresh-nginx.sh`:
+
+- удаляет все профили Minikube
+- поднимает Minikube (docker driver) с пробросом портов
+- ставит Ingress-NGINX как NodePort на указанных портах
+- деплоит CVAT Helm chart с `values.yaml` + `values.override.yaml`
+- ждёт rollout `cvat-backend-server` и `cvat-frontend`
+- проверяет `GET /api/server/about` и печатает URL
+
+### 1) Запуск
+
+Из корня репозитория:
 
 ```bash
-export NAMESPACE="cvat"  # Или выберите другое имя
-export RELEASE_NAME="cvat"  # Имя Helm release
+chmod +x ./deploy-fresh-nginx.sh
+./deploy-fresh-nginx.sh
 ```
 
-Создайте namespace (если его нет):
+### 2) Что скрипт считает “публичным URL”
 
-```bash
-kubectl create namespace $NAMESPACE
-```
+В скрипте используются переменные:
 
-### 3. Проверка контекста Kubernetes
+- `PUBLIC_IP` (по умолчанию `10.144.165.63`)
+- `EXTERNAL_HTTP_PORT` (по умолчанию `30080`)
+- `EXTERNAL_HTTPS_PORT` (по умолчанию `30443`)
+- `PUBLIC_HOST` формируется через `sslip.io`:
+  `10.144.165.63` → `10-144-165-63.sslip.io`
+- `PUBLIC_URL` по умолчанию: `http://10-144-165-63.sslip.io:30080`
 
-Убедитесь, что вы используете правильный контекст:
+Важно: **URL в браузере должен совпадать** с тем, что указано в `CSRF_TRUSTED_ORIGINS` (см. ниже), иначе получите CSRF-ошибку.
 
-```bash
-kubectl config current-context
-```
+---
 
-Если нужно переключить контекст:
+## Конфигурация Helm: что реально используется в values.override.yaml
 
-```bash
-kubectl config use-context <your-context-name>
-```
+Файл `values.override.yaml` задаёт “рабочую” конфигурацию для текущего варианта с Ingress-NGINX.
 
-### 4. Установка зависимостей Helm chart
+### Пароли (сейчас стоят тестовые — заменить обязательно)
 
-Перейдите в директорию helm-chart и обновите зависимости:
+В текущем файле стоят значения `test`:
 
-```bash
-cd helm-chart
-helm dependency update
-```
+- `postgresql.secret.password / postgres_password / replication_password`
+- `redis.secret.password`
+- `cvat.kvrocks.secret.password`
 
-Эта команда загрузит все необходимые зависимости:
-- PostgreSQL chart (Bitnami)
-- Redis chart (Bitnami)
-- Nuclio chart (если включен)
-- Traefik chart (если включен)
-- И другие зависимости
+Перед любым деплоем, который не одноразовый тест, замените на нормальные значения.
 
-Убедитесь, что команда завершилась успешно. Зависимости будут загружены в директорию `charts/`.
+### CVAT backend образ
 
-## Настройка конфигурации
-
-### 1. Создание файла values.override.yaml
-
-Файл `values.override.yaml` уже создан в директории `helm-chart/`. Откройте его для редактирования:
-
-```bash
-cd helm-chart
-vim values.override.yaml  # или используйте другой редактор
-```
-
-### 2. Настройка обязательных параметров
-
-#### Пароли PostgreSQL (ОБЯЗАТЕЛЬНО)
-
-Найдите секцию `postgresql.secret` и замените все `<CHANGE_ME_*>` на безопасные пароли:
-
-```yaml
-postgresql:
-  secret:
-    password: your_secure_postgresql_password
-    postgres_password: your_secure_postgres_postgres_password
-    replication_password: your_secure_replication_password
-```
-
-ВАЖНО: Используйте сильные пароли. Сохраните их в безопасном месте.
-
-#### Пароли Redis (рекомендуется)
-
-```yaml
-redis:
-  secret:
-    password: your_secure_redis_password
-```
-
-#### Пароль KVRocks (рекомендуется)
-
-```yaml
-cvat:
-  kvrocks:
-    secret:
-      password: your_secure_kvrocks_password
-```
-
-### 3. Настройка опциональных параметров
-
-#### Изменение образа CVAT
-
-По умолчанию используется `dev` тег. Для production используйте конкретную версию:
+Используется:
 
 ```yaml
 cvat:
   backend:
     image: cvat/server
-    tag: "2.54.1"  # Укажите нужную версию
-    imagePullPolicy: IfNotPresent  # Для production
+    tag: dev
+    imagePullPolicy: Always
 ```
 
-#### Настройка реплик
+Для продакшена рекомендуется заменить `tag: dev` на конкретную версию CVAT и поставить `IfNotPresent`.
 
-Настройте количество реплик в зависимости от нагрузки:
+### Реплики воркеров
+
+В `values.override.yaml` задано:
+
+- `backend.server.replicas: 1`
+- worker’ы: export/import по 2, chunks — 2, остальные по 1
+
+При нехватке ресурсов в кластере — уменьшайте.
+
+### CSRF/Hosts (самая частая причина “не открывается”)
+
+В override заданы переменные окружения backend сервера:
 
 ```yaml
 cvat:
   backend:
     server:
-      replicas: 2  # Увеличьте для высокой нагрузки
-    worker:
-      export:
-        replicas: 3
-      import:
-        replicas: 3
+      envs:
+        ALLOWED_HOSTS: "*"
+        CSRF_TRUSTED_ORIGINS: "http://10-144-165-63.sslip.io:30080"
+        CSRF_COOKIE_SECURE: "false"
+        CORS_ALLOW_CREDENTIALS: "true"
 ```
 
-#### Настройка хранилища
+Если вы меняете IP/hostname/порт/схему (http/https) — **обновляйте `CSRF_TRUSTED_ORIGINS`** под ваш реальный URL.
 
-Измените размер PersistentVolumeClaim:
+### Ingress (NGINX)
 
-```yaml
-cvat:
-  backend:
-    defaultStorage:
-      size: 50Gi  # Увеличьте при необходимости
-      # storageClassName: fast-ssd  # Укажите класс хранилища
-```
-
-#### Настройка Ingress
-
-Для доступа извне кластера включите Ingress:
+Override включает Ingress и выключает Traefik:
 
 ```yaml
 ingress:
   enabled: true
-  hostname: cvat.yourdomain.com  # Ваш домен
-  className: "nginx"  # Или "traefik", в зависимости от вашего ingress controller
+  hostname: 10-144-165-63.sslip.io
+  className: "nginx"
   annotations:
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"  # Если используете cert-manager
-  tls: true
-  tlsSecretName: cvat-tls
-```
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  tls: false
+  tlsSecretName: ingress-tls-cvat
 
-#### Настройка Traefik
-
-Если вы используете Traefik как ingress controller:
-
-```yaml
 traefik:
-  enabled: true
-  # Для Minikube может потребоваться:
-  # service:
-  #   externalIPs:
-  #     - "192.168.49.2"  # IP адрес Minikube (получите через: minikube ip)
-```
-
-Для Minikube также добавьте запись в /etc/hosts:
-
-```bash
-echo "$(minikube ip) cvat.local" | sudo tee -a /etc/hosts
-```
-
-### 4. Настройка внешних сервисов (опционально)
-
-#### Использование внешнего PostgreSQL
-
-Если у вас уже есть PostgreSQL сервер:
-
-```yaml
-postgresql:
   enabled: false
-  external:
-    host: postgresql.example.com
-    port: 5432
-  auth:
-    username: cvat
-    database: cvat
-  secret:
-    password: your_external_db_password
 ```
-
-#### Использование внешнего Redis
-
-```yaml
-redis:
-  enabled: false
-  external:
-    host: redis.example.com
-  secret:
-    password: your_external_redis_password
-```
-
-## Развертывание
-
-### 1. Предварительная проверка
-
-Перед развертыванием проверьте конфигурацию:
-
-```bash
-# Проверка синтаксиса Helm chart
-helm lint ./helm-chart -f ./helm-chart/values.yaml -f ./helm-chart/values.override.yaml
-
-# Предварительный просмотр манифестов (dry-run)
-helm upgrade $RELEASE_NAME ./helm-chart \
-  -n $NAMESPACE \
-  --create-namespace \
-  -f ./helm-chart/values.yaml \
-  -f ./helm-chart/values.override.yaml \
-  --dry-run --debug
-```
-
-### 2. Развертывание
-
-Выполните развертывание:
-
-```bash
-helm upgrade $RELEASE_NAME ./helm-chart \
-  -n $NAMESPACE \
-  --create-namespace \
-  -i \
-  -f ./helm-chart/values.yaml \
-  -f ./helm-chart/values.override.yaml
-```
-
-Флаги:
-- `-i` или `--install`: установить release, если его еще нет
-- `--create-namespace`: создать namespace, если его нет
-- `-f`: указать файлы с values
-
-### 3. Мониторинг развертывания
-
-Отслеживайте статус развертывания:
-
-```bash
-# Проверка статуса Helm release
-helm status $RELEASE_NAME -n $NAMESPACE
-
-# Просмотр подов
-kubectl get pods -n $NAMESPACE -w
-
-# Просмотр сервисов
-kubectl get svc -n $NAMESPACE
-
-# Просмотр PersistentVolumeClaims
-kubectl get pvc -n $NAMESPACE
-```
-
-Ожидайте, пока все поды перейдут в состояние `Running`:
-
-```bash
-kubectl wait --for=condition=ready pod \
-  -l app=cvat-app \
-  -n $NAMESPACE \
-  --timeout=300s
-```
-
-### 4. Проверка логов
-
-Если что-то пошло не так, проверьте логи:
-
-```bash
-# Логи backend сервера
-kubectl logs -n $NAMESPACE -l tier=backend,component=server --tail=100
-
-# Логи конкретного пода
-kubectl logs -n $NAMESPACE <pod-name> --tail=100
-
-# Логи с предыдущего контейнера (если под перезапускался)
-kubectl logs -n $NAMESPACE <pod-name> --previous
-```
-
-## Пост-развертывание
-
-### 1. Создание суперпользователя
-
-После успешного развертывания создайте администратора:
-
-```bash
-HELM_RELEASE_NAMESPACE="$NAMESPACE"
-HELM_RELEASE_NAME="$RELEASE_NAME"
-BACKEND_POD_NAME=$(kubectl get pod --namespace $HELM_RELEASE_NAMESPACE \
-  -l tier=backend,app.kubernetes.io/instance=$HELM_RELEASE_NAME,component=server \
-  -o jsonpath='{.items[0].metadata.name}')
-
-kubectl exec -it --namespace $HELM_RELEASE_NAMESPACE $BACKEND_POD_NAME \
-  -c cvat-backend -- python manage.py createsuperuser
-```
-
-Следуйте инструкциям для ввода имени пользователя, email и пароля.
-
-### 2. Получение доступа к приложению
-
-#### Через Ingress (если настроен)
-
-Если вы настроили Ingress, откройте в браузере:
-
-```
-http://cvat.yourdomain.com  # или https:// если настроен TLS
-```
-
-#### Через Port Forward (для тестирования)
-
-Если Ingress не настроен, используйте port-forward:
-
-```bash
-# Получите имя сервиса
-kubectl get svc -n $NAMESPACE
-
-# Проброс порта для frontend
-kubectl port-forward -n $NAMESPACE svc/$RELEASE_NAME-frontend 8000:8000
-
-# В другом терминале - проброс для backend
-kubectl port-forward -n $NAMESPACE svc/$RELEASE_NAME-backend-server 8080:8080
-```
-
-Затем откройте в браузере: `http://localhost:8000`
-
-#### Через NodePort (если настроен)
-
-Если сервисы имеют тип NodePort:
-
-```bash
-kubectl get svc -n $NAMESPACE
-# Найдите EXTERNAL-IP или используйте <node-ip>:<nodeport>
-```
-
-### 3. Проверка работоспособности
-
-1. Откройте веб-интерфейс CVAT
-2. Войдите с учетными данными суперпользователя
-3. Проверьте, что все компоненты работают:
-   - Создание задачи
-   - Загрузка данных
-   - Экспорт аннотаций
-
-## Настройка внешнего MinIO
-
-### Вариант 1: Настройка через CVAT Web UI (рекомендуется)
-
-1. Войдите в CVAT как администратор
-2. Перейдите в Settings > Cloud Storages
-3. Нажмите "Create cloud storage"
-4. Заполните форму:
-   - **Provider**: AWS S3
-   - **Bucket name**: имя вашего bucket в MinIO
-   - **Endpoint URL**: `http://your-minio-server:9000` (или `https://` если используется TLS)
-   - **Access key ID**: ваш MinIO access key
-   - **Secret access key**: ваш MinIO secret key
-   - **Region**: `us-east-1` (MinIO не требует реальный регион)
-5. Нажмите "Submit"
-
-### Вариант 2: Настройка через API
-
-Создайте cloud storage через REST API:
-
-```bash
-# Получите токен авторизации
-TOKEN=$(curl -X POST http://localhost:8080/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"your_password"}' \
-  | jq -r '.key')
-
-# Создайте cloud storage
-curl -X POST http://localhost:8080/api/cloudstorages \
-  -H "Authorization: Token $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "provider_type": "AWS_S3_BUCKET",
-    "resource": "your-bucket-name",
-    "credentials_type": "KEY_SECRET_KEY_PAIR",
-    "specific_attributes": "endpoint_url=http://your-minio-server:9000",
-    "key": "your-minio-access-key",
-    "secret_key": "your-minio-secret-key"
-  }'
-```
-
-### Вариант 3: Использование переменных окружения (для дефолтных credentials)
-
-Если вы хотите установить дефолтные credentials через переменные окружения:
-
-1. Создайте Kubernetes Secret:
-
-```bash
-kubectl create secret generic cvat-minio-credentials \
-  --from-literal=AWS_ACCESS_KEY_ID=your-access-key \
-  --from-literal=AWS_SECRET_ACCESS_KEY=your-secret-key \
-  --from-literal=AWS_DEFAULT_REGION=us-east-1 \
-  --from-literal=AWS_ENDPOINT_URL=http://minio.example.com:9000 \
-  -n $NAMESPACE
-```
-
-2. Раскомментируйте и настройте секцию `Option B` в `values.override.yaml`:
-
-```yaml
-cvat:
-  backend:
-    additionalEnv:
-      - name: AWS_ACCESS_KEY_ID
-        valueFrom:
-          secretKeyRef:
-            name: cvat-minio-credentials
-            key: AWS_ACCESS_KEY_ID
-      # ... и так далее для других переменных
-```
-
-3. Обновите развертывание:
-
-```bash
-helm upgrade $RELEASE_NAME ./helm-chart \
-  -n $NAMESPACE \
-  -f ./helm-chart/values.yaml \
-  -f ./helm-chart/values.override.yaml
-```
-
-### Важные замечания по сетевой связности
-
-#### MinIO на другом сервере
-
-- Убедитесь, что MinIO доступен из Kubernetes кластера
-- Используйте IP адрес или hostname сервера MinIO
-- Проверьте firewall правила
-- Убедитесь, что порты MinIO (обычно 9000 и 9001) открыты
-
-#### MinIO локально, но вне Kubernetes
-
-**Для Minikube:**
-
-```bash
-# Получите IP Minikube
-minikube ip
-
-# Используйте этот IP для доступа к MinIO, если он запущен на хосте
-# Или используйте специальный адрес для доступа к хосту из Minikube
-```
-
-**Для Docker Desktop:**
-
-Используйте `host.docker.internal` как hostname MinIO в endpoint URL.
-
-**Для других Kubernetes дистрибутивов:**
-
-- Настройте Service или Ingress для MinIO
-- Или используйте NodePort для доступа к MinIO
-- Или используйте ExternalName Service:
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: minio-external
-  namespace: $NAMESPACE
-spec:
-  type: ExternalName
-  externalName: your-minio-server.example.com
-  ports:
-    - port: 9000
-      targetPort: 9000
-```
-
-Затем используйте `minio-external.$NAMESPACE.svc.cluster.local:9000` как endpoint URL.
-
-### Проверка подключения к MinIO
-
-После настройки проверьте подключение:
-
-1. В CVAT UI перейдите в Settings > Cloud Storages
-2. Найдите созданное хранилище
-3. Проверьте статус - должно быть "AVAILABLE"
-4. Попробуйте просмотреть содержимое bucket
-
-## Обновление развертывания
-
-### Обновление конфигурации
-
-После изменения `values.override.yaml`:
-
-```bash
-# Предварительный просмотр изменений
-helm diff upgrade $RELEASE_NAME ./helm-chart \
-  -n $NAMESPACE \
-  -f ./helm-chart/values.yaml \
-  -f ./helm-chart/values.override.yaml
-
-# Применить изменения
-helm upgrade $RELEASE_NAME ./helm-chart \
-  -n $NAMESPACE \
-  -f ./helm-chart/values.yaml \
-  -f ./helm-chart/values.override.yaml
-```
-
-### Обновление версии CVAT
-
-1. Измените тег образа в `values.override.yaml`:
-
-```yaml
-cvat:
-  backend:
-    tag: "2.54.2"  # Новая версия
-  frontend:
-    tag: "2.54.2"
-```
-
-2. Выполните обновление:
-
-```bash
-helm upgrade $RELEASE_NAME ./helm-chart \
-  -n $NAMESPACE \
-  -f ./helm-chart/values.yaml \
-  -f ./helm-chart/values.override.yaml
-```
-
-3. Проверьте статус:
-
-```bash
-helm status $RELEASE_NAME -n $NAMESPACE
-kubectl get pods -n $NAMESPACE -w
-```
-
-### Откат к предыдущей версии
-
-Если что-то пошло не так:
-
-```bash
-# Просмотр истории
-helm history $RELEASE_NAME -n $NAMESPACE
-
-# Откат к предыдущей версии
-helm rollback $RELEASE_NAME -n $NAMESPACE
-
-# Или к конкретной ревизии
-helm rollback $RELEASE_NAME <revision-number> -n $NAMESPACE
-```
-
-## Решение проблем
-
-### Проблема: Поды не запускаются
-
-**Диагностика:**
-
-```bash
-# Проверьте статус подов
-kubectl get pods -n $NAMESPACE
-
-# Проверьте события
-kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp'
-
-# Проверьте описание пода
-kubectl describe pod <pod-name> -n $NAMESPACE
-
-# Проверьте логи
-kubectl logs <pod-name> -n $NAMESPACE
-```
-
-**Возможные причины:**
-- Недостаточно ресурсов в кластере
-- Проблемы с PersistentVolume
-- Неправильная конфигурация
-- Проблемы с образами
-
-### Проблема: Поды в состоянии ImagePullBackOff
-
-**Решение:**
-
-1. Проверьте доступность образа:
-
-```bash
-kubectl describe pod <pod-name> -n $NAMESPACE | grep -A 5 Events
-```
-
-2. Если используется приватный registry, настройте imagePullSecrets:
-
-```bash
-# Создайте secret для registry
-kubectl create secret docker-registry regcred \
-  --docker-server=<registry-url> \
-  --docker-username=<username> \
-  --docker-password=<password> \
-  -n $NAMESPACE
-
-# Добавьте в values.override.yaml
-imagePullSecrets:
-  - name: regcred
-```
-
-### Проблема: Ошибка "field is immutable" при обновлении
-
-Эта ошибка возникает при попытке изменить неизменяемые поля в Deployment.
-
-**Решение:**
-
-```bash
-# Удалите Deployments перед обновлением
-kubectl delete deployments --namespace=$NAMESPACE -l app=cvat-app
-
-# Затем выполните обновление
-helm upgrade $RELEASE_NAME ./helm-chart \
-  -n $NAMESPACE \
-  -f ./helm-chart/values.yaml \
-  -f ./helm-chart/values.override.yaml
-```
-
-### Проблема: PostgreSQL не подключается
-
-**Диагностика:**
-
-```bash
-# Проверьте статус PostgreSQL
-kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=postgresql
-
-# Проверьте логи PostgreSQL
-kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=postgresql
-
-# Проверьте секреты
-kubectl get secrets -n $NAMESPACE | grep postgres
-```
-
-**Решение:**
-- Убедитесь, что пароли правильно установлены в `values.override.yaml`
-- Проверьте, что PostgreSQL pod запущен и готов
-- Проверьте сетевую связность между подами
-
-### Проблема: Не могу подключиться к MinIO
-
-**Диагностика:**
-
-1. Проверьте доступность MinIO из пода:
-
-```bash
-# Зайдите в backend pod
-kubectl exec -it -n $NAMESPACE <backend-pod-name> -c cvat-backend -- /bin/bash
-
-# Попробуйте подключиться к MinIO
-curl -v http://your-minio-server:9000
-```
-
-2. Проверьте DNS разрешение:
-
-```bash
-kubectl exec -it -n $NAMESPACE <backend-pod-name> -c cvat-backend -- nslookup your-minio-server
-```
-
-**Решение:**
-- Убедитесь, что MinIO доступен из кластера
-- Проверьте firewall правила
-- Для локального MinIO используйте правильный адрес (host.docker.internal, minikube ip и т.д.)
-- Проверьте правильность endpoint URL в конфигурации cloud storage
-
-### Проблема: PersistentVolume не создается
-
-**Диагностика:**
-
-```bash
-# Проверьте PVC
-kubectl get pvc -n $NAMESPACE
-
-# Проверьте описание PVC
-kubectl describe pvc <pvc-name> -n $NAMESPACE
-
-# Проверьте StorageClass
-kubectl get storageclass
-```
-
-**Решение:**
-- Убедитесь, что в кластере настроен StorageClass
-- Укажите правильный `storageClassName` в `values.override.yaml`
-- Проверьте, что в кластере достаточно ресурсов для создания PV
-
-### Проблема: Ingress не работает
-
-**Диагностика:**
-
-```bash
-# Проверьте Ingress
-kubectl get ingress -n $NAMESPACE
-
-# Проверьте описание Ingress
-kubectl describe ingress -n $NAMESPACE
-
-# Проверьте ingress controller
-kubectl get pods -n <ingress-controller-namespace>
-```
-
-**Решение:**
-- Убедитесь, что ingress controller установлен и работает
-- Проверьте правильность `className` в конфигурации
-- Для Minikube включите ingress addon: `minikube addons enable ingress`
-- Проверьте DNS записи для вашего домена
-
-### Проблема: Высокое использование ресурсов
-
-**Решение:**
-
-1. Настройте лимиты ресурсов в `values.override.yaml`:
-
-```yaml
-cvat:
-  backend:
-    server:
-      resources:
-        requests:
-          memory: "2Gi"
-          cpu: "1000m"
-        limits:
-          memory: "4Gi"
-          cpu: "2000m"
-```
-
-2. Уменьшите количество реплик, если ресурсов не хватает
-3. Используйте HorizontalPodAutoscaler для автоматического масштабирования
-
-### Получение дополнительной информации
-
-Для получения более подробной информации:
-
-```bash
-# Полная информация о release
-helm get all $RELEASE_NAME -n $NAMESPACE
-
-# Манифесты ресурсов
-helm get manifest $RELEASE_NAME -n $NAMESPACE
-
-# Значения конфигурации
-helm get values $RELEASE_NAME -n $NAMESPACE
-```
-
-## Полезные команды
-
-### Мониторинг
-
-```bash
-# Следить за логами всех подов
-kubectl logs -f -n $NAMESPACE -l app=cvat-app
-
-# Следить за статусом подов
-watch kubectl get pods -n $NAMESPACE
-
-# Использование ресурсов
-kubectl top pods -n $NAMESPACE
-kubectl top nodes
-```
-
-### Управление данными
-
-```bash
-# Резервное копирование PostgreSQL
-kubectl exec -n $NAMESPACE <postgresql-pod> -- pg_dump -U cvat cvat > backup.sql
-
-# Восстановление из backup
-kubectl exec -i -n $NAMESPACE <postgresql-pod> -- psql -U cvat cvat < backup.sql
-
-# Просмотр размера PVC
-kubectl get pvc -n $NAMESPACE
-```
-
-### Очистка
-
-```bash
-# Удаление release (ВНИМАНИЕ: удалит все данные!)
-helm uninstall $RELEASE_NAME -n $NAMESPACE
-
-# Удаление namespace (удалит все ресурсы в namespace)
-kubectl delete namespace $NAMESPACE
-```
-
-## Дополнительные ресурсы
-
-- Официальная документация CVAT: https://docs.cvat.ai/
-- Документация Helm: https://helm.sh/docs/
-- Kubernetes документация: https://kubernetes.io/docs/
-- CVAT GitHub: https://github.com/cvat-ai/cvat
-
-## Поддержка
-
-Если вы столкнулись с проблемами, которые не описаны в этом руководстве:
-
-1. Проверьте официальную документацию CVAT
-2. Проверьте issues на GitHub
-3. Обратитесь в сообщество CVAT
 
 ---
 
-Примечание: Это руководство предназначено для развертывания CVAT в production-подобном окружении. Для production развертывания обязательно:
-- Используйте конкретные версии образов (не `dev` тег)
-- Настройте правильные лимиты ресурсов
-- Настройте мониторинг и алертинг
-- Настройте резервное копирование
-- Используйте безопасные пароли
-- Настройте TLS для всех внешних соединений
-- Настройте сетевые политики
-- Регулярно обновляйте компоненты
+## Деплой в существующий кластер (не Minikube)
+
+Ниже — “ручной” вариант тех же действий, что делает `deploy-fresh-nginx.sh`, но без Minikube.
+
+### 1) Подготовьте Ingress-NGINX
+
+Если Ingress-NGINX уже установлен — пропустите.
+
+Пример установки через Helm (NodePort):
+
+```bash
+kubectl get ns ingress-nginx >/dev/null 2>&1 || kubectl create ns ingress-nginx
+
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx >/dev/null 2>&1 || true
+helm repo update >/dev/null 2>&1
+
+helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx   -n ingress-nginx   --set controller.service.type=NodePort   --set controller.service.nodePorts.http=30080   --set controller.service.nodePorts.https=30443   --set controller.ingressClassResource.name=nginx   --set controller.ingressClass=nginx
+
+kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=10m
+```
+
+Если у вас LoadBalancer — используйте `controller.service.type=LoadBalancer` и корректный внешний адрес.
+
+### 2) Подготовьте значения `values.override.yaml`
+
+- выставьте `ingress.hostname` на ваш домен/хост
+- выставьте `cvat.backend.server.envs.CSRF_TRUSTED_ORIGINS` на **реальный URL** (scheme + host + port)
+- при HTTPS включите `ingress.tls: true` и `CSRF_COOKIE_SECURE: "true"`
+
+### 3) Деплой CVAT Helm chart
+
+```bash
+export NAMESPACE="cvat"
+export RELEASE_NAME="cvat"
+
+kubectl get ns "${NAMESPACE}" >/dev/null 2>&1 || kubectl create ns "${NAMESPACE}"
+
+helm dependency update ./helm-chart
+
+helm upgrade --install "${RELEASE_NAME}" ./helm-chart   -n "${NAMESPACE}"   --create-namespace   -f ./helm-chart/values.yaml   -f ./helm-chart/values.override.yaml
+
+kubectl -n "${NAMESPACE}" rollout status deploy/cvat-backend-server --timeout=20m
+kubectl -n "${NAMESPACE}" rollout status deploy/cvat-frontend --timeout=20m
+```
+
+### 4) Проверка
+
+```bash
+kubectl -n ingress-nginx get svc ingress-nginx-controller -o wide
+kubectl -n "${NAMESPACE}" get ingress -o wide
+
+# Замените на свой URL
+curl -sS -i "http://10-144-165-63.sslip.io:30080/api/server/about" | head -n 30
+```
+
+---
+
+## Пост-развертывание
+
+### 1) Создание суперпользователя
+
+```bash
+export NAMESPACE="cvat"
+export RELEASE_NAME="cvat"
+
+BACKEND_POD_NAME="$(
+  kubectl get pod -n "${NAMESPACE}"     -l app.kubernetes.io/instance="${RELEASE_NAME}",tier=backend,component=server     -o jsonpath='{.items[0].metadata.name}'
+)"
+
+kubectl exec -it -n "${NAMESPACE}" "${BACKEND_POD_NAME}" -c cvat-backend   -- python manage.py createsuperuser
+```
+
+### 2) Открытие UI
+
+Откройте URL, соответствующий вашему Ingress + NodePort/LoadBalancer. Для дефолтного сценария из скрипта:
+
+- `http://10-144-165-63.sslip.io:30080/`
+
+---
+
+## Настройка внешнего MinIO (S3-compatible)
+
+Текущая стратегия (и она же самая стабильная): **настроить Cloud Storage через UI**.
+
+### Вариант A: через CVAT UI
+
+1. Зайдите в CVAT как админ
+2. Settings → Cloud Storages → Create cloud storage
+3. Provider: AWS S3
+4. Bucket name: ваш bucket
+5. Endpoint URL: `http://<minio-host>:9000`
+6. Access/Secret key: от MinIO
+7. Region: `us-east-1`
+
+### Вариант B: через Kubernetes Secret (для дефолтных AWS_* переменных)
+
+`values.override.yaml` содержит заготовку (закомментировано). Общая идея:
+
+```bash
+kubectl create secret generic cvat-minio-credentials   --from-literal=AWS_ACCESS_KEY_ID=...   --from-literal=AWS_SECRET_ACCESS_KEY=...   --from-literal=AWS_DEFAULT_REGION=us-east-1   --from-literal=AWS_ENDPOINT_URL=http://minio.example.com:9000   -n cvat
+```
+
+Затем раскомментировать `cvat.backend.additionalEnv` и сделать `helm upgrade`.
+
+Важно: сам CVAT всё равно “подключает” S3-сторедж через сущность Cloud Storage (UI/API). Эти переменные полезны, если вы хотите задать дефолтные креды для SDK.
+
+---
+
+## Обновление развертывания
+
+После правок `values.override.yaml`:
+
+```bash
+helm upgrade "${RELEASE_NAME}" ./helm-chart   -n "${NAMESPACE}"   -f ./helm-chart/values.yaml   -f ./helm-chart/values.override.yaml
+```
+
+Проверка:
+
+```bash
+helm status "${RELEASE_NAME}" -n "${NAMESPACE}"
+kubectl get pods -n "${NAMESPACE}" -w
+```
+
+---
+
+## Решение проблем
+
+### CSRF Failed: Origin checking failed
+
+Причина: URL в браузере **не совпадает** с `CSRF_TRUSTED_ORIGINS`.
+
+Что делать:
+
+1. Узнайте, по какому URL вы реально открываете CVAT (scheme + host + port).
+2. Поставьте этот URL в `cvat.backend.server.envs.CSRF_TRUSTED_ORIGINS` в `values.override.yaml`.
+3. Примените `helm upgrade`.
+
+Проверка текущих env внутри backend:
+
+```bash
+kubectl -n cvat exec deploy/cvat-backend-server -c cvat-backend --   sh -lc 'env | grep -E "CSRF|ALLOWED_HOSTS|DJANGO" | sort'
+```
+
+### Ingress работает, но большие файлы не загружаются / таймауты
+
+В override уже проставлены аннотации:
+
+- `proxy-body-size: "0"`
+- `proxy-read-timeout: "3600"`
+- `proxy-send-timeout: "3600"`
+- `proxy-buffering: "off"`
+
+Если всё равно режет — проверьте, что именно этот Ingress применяется к нужному IngressClass (`nginx`) и что контроллер реально читает эти аннотации.
+
+### Поды не стартуют / CrashLoopBackOff
+
+Быстрый чек:
+
+```bash
+kubectl get pods -n cvat
+kubectl get events -n cvat --sort-by='.lastTimestamp' | tail -n 50
+kubectl logs -n cvat deploy/cvat-backend-server -c cvat-backend --tail=200
+```
+
+### Нет доступа снаружи к NodePort
+
+- убедитесь, что вы попадаете на **IP ноды**, где открыт NodePort
+- проверьте firewall/security groups
+- проверьте, что сервис ingress-nginx-controller реально NodePort и на нужных портах:
+
+```bash
+kubectl -n ingress-nginx get svc ingress-nginx-controller -o wide
+```
+
+---
+
+## Полезные команды
+
+### Статус и диагностика
+
+```bash
+helm list -n cvat
+helm status cvat -n cvat
+
+kubectl get pods -n cvat -o wide
+kubectl get svc -n cvat -o wide
+kubectl get ingress -n cvat -o wide
+
+kubectl describe ingress -n cvat
+kubectl describe pod -n cvat <pod>
+```
+
+### Полное удаление (внимание: данные будут потеряны)
+
+```bash
+helm uninstall cvat -n cvat
+kubectl delete ns cvat
+```
